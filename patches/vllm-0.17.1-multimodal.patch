@@ -1,0 +1,74 @@
+--- a/vllm/model_executor/models/transformers/multimodal.py	2026-04-06 01:16:07
++++ b/vllm/model_executor/models/transformers/multimodal.py	2026-04-05 22:32:56
+@@ -66,20 +66,65 @@
+ 
+ 
+ class MultiModalProcessingInfo(BaseProcessingInfo):
++    def _resolve_processor_method(self, processor):
++        method = getattr(processor, "_get_num_multimodal_tokens", None)
++        if method is None:
++            import importlib, types as _types
++            _cls = getattr(
++                importlib.import_module(type(processor).__module__),
++                type(processor).__name__, None,
++            )
++            _unbound = getattr(_cls, "_get_num_multimodal_tokens", None) if _cls else None
++            if _unbound is not None:
++                method = _types.MethodType(_unbound, processor)
++        return method
++
++    def _processor_supports_audio(self) -> bool:
++        try:
++            proc = self.get_hf_processor()
++            method = self._resolve_processor_method(proc)
++            if method is None:
++                return False
++            result = method(audio_lengths=[16000])
++            return "num_audio_tokens" in result
++        except Exception:
++            return False
++
+     def get_supported_mm_limits(self):
+-        return {"image": None}
++        limits = {"image": None}
++        if self._processor_supports_audio():
++            limits["audio"] = None
++        return limits
+ 
+     def get_mm_max_tokens_per_item(self, seq_len, mm_counts):
+-        return {"image": self.get_max_image_tokens()}
++        result = {"image": self.get_max_image_tokens()}
++        if "audio" in mm_counts and self._processor_supports_audio():
++            result["audio"] = self.get_max_audio_tokens()
++        return result
++
++    def get_max_audio_tokens(self) -> int:
++        max_audio_samples = 30 * 16_000
++        try:
++            processor = self.get_hf_processor()
++            method = self._resolve_processor_method(processor)
++            if method is not None:
++                result = method(audio_lengths=[max_audio_samples])
++                tokens = result.get("num_audio_tokens", [])
++                if tokens:
++                    return int(tokens[0])
++        except Exception:
++            pass
++        return 1500
+ 
+     def get_max_image_tokens(self) -> int:
+         width, height = self.get_max_image_size()
+         processor = self.get_hf_processor()
+         multimodal_config = self.ctx.model_config.multimodal_config
+-        mm_processor_kwargs = multimodal_config.mm_processor_kwargs or {}
+-        mm_tokens = processor._get_num_multimodal_tokens(
+-            image_sizes=([height, width],), **mm_processor_kwargs
+-        )
++        mm_processor_kwargs = (multimodal_config.mm_processor_kwargs or {})
++        method = self._resolve_processor_method(processor)
++        if method is None:
++            return 256  # conservative fallback (won't be reached for Gemma 4)
++        mm_tokens = method(image_sizes=([height, width],), **mm_processor_kwargs)
+         image_tokens = mm_tokens["num_image_tokens"][0]
+         return image_tokens
+ 
