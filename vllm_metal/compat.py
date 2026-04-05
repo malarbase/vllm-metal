@@ -21,6 +21,8 @@ def apply_compat_patches() -> None:
         return
     _APPLIED = True
     _patch_qwen35_rope_validation()
+    _patch_gemma4_rope_scaling()
+    _patch_gemma4_multimodal_token_budget()
 
 
 def _patch_qwen35_rope_validation() -> None:
@@ -97,5 +99,110 @@ def _patch_qwen35_rope_validation() -> None:
             logger.debug(
                 "Patched PreTrainedConfig._check_received_keys for rope compat"
             )
+    except (ImportError, AttributeError):
+        pass
+
+
+def _patch_gemma4_rope_scaling() -> None:
+    """Fix vLLM rope_scaling validation for Gemma 4.
+
+    Transformers maps Gemma 4's ``rope_parameters`` field onto the
+    ``rope_scaling`` attribute of ``Gemma4TextConfig``.  The resulting dict
+    uses a *nested* format::
+
+        {"full_attention": {"rope_type": "proportional", ...},
+         "sliding_attention": {"rope_type": "default", ...}}
+
+    vLLM's ``patch_rope_scaling_dict`` expects a *flat* dict with a top-level
+    ``rope_type`` key and raises ``ValueError`` when it is absent.  Since vLLM
+    has no way to run the Gemma 4 rope calculation itself (it delegates to MLX),
+    we can safely skip the flat-format validation for nested dicts.
+
+    Remove this patch when vLLM adds native Gemma 4 rope_scaling support.
+    """
+    try:
+        import vllm.transformers_utils.config as _cfg_module
+
+        _orig_patch = _cfg_module.patch_rope_scaling_dict
+
+        def _safe_patch_rope_scaling_dict(rope_scaling: dict) -> None:  # type: ignore[override]
+            # Nested format (Gemma 4) — values are sub-dicts, not scalars.
+            if any(isinstance(v, dict) for v in rope_scaling.values()):
+                return
+            return _orig_patch(rope_scaling)
+
+        _cfg_module.patch_rope_scaling_dict = _safe_patch_rope_scaling_dict
+        logger.debug(
+            "Patched patch_rope_scaling_dict for Gemma 4 rope_parameters compat"
+        )
+    except (ImportError, AttributeError):
+        pass
+
+
+def _patch_gemma4_multimodal_token_budget() -> None:
+    """Fix vLLM 0.17.1 EngineCore subprocess failing to call
+    ``Gemma4Processor._get_num_multimodal_tokens`` during MultiModalBudget init.
+
+    Root cause: in vLLM's spawn-based EngineCore subprocess the processor
+    object is delivered via IPC (shared memory / pickle).  The reconstructed
+    object's type reports ``Gemma4Processor`` but attribute lookup for
+    ``_get_num_multimodal_tokens`` fails, most likely because the proxy
+    wrapper only exposes a predefined set of proxied attributes and this
+    method—added in transformers 5.5.0—was not in the registered set when
+    the proxy class was generated.
+
+    Fix: wrap ``MultiModalProcessingInfo.get_max_image_tokens`` so that when
+    the attribute is unreachable on the instance we resolve it directly from
+    the concrete class in the transformers module, bypassing the proxy layer.
+
+    Remove this patch when vllm-metal upgrades to a vLLM version that has
+    been tested against transformers 5.5.0 with Gemma 4.
+    """
+    try:
+        from vllm.model_executor.models.transformers import multimodal as _mm
+    except ImportError:
+        return
+
+    try:
+        _orig = _mm.MultiModalProcessingInfo.get_max_image_tokens
+
+        def _patched_get_max_image_tokens(self) -> int:  # type: ignore[override]
+            width, height = self.get_max_image_size()
+            processor = self.get_hf_processor()
+            multimodal_config = self.ctx.model_config.multimodal_config
+            mm_processor_kwargs = (multimodal_config.mm_processor_kwargs or {})
+
+            method = getattr(processor, "_get_num_multimodal_tokens", None)
+            if method is None:
+                # Proxy object: resolve unbound function from the concrete class.
+                import importlib
+
+                proc_cls_name = type(processor).__name__
+                proc_module = importlib.import_module(type(processor).__module__)
+                proc_cls = getattr(proc_module, proc_cls_name, None)
+                if proc_cls is not None:
+                    unbound = getattr(proc_cls, "_get_num_multimodal_tokens", None)
+                    if unbound is not None:
+                        import types
+                        method = types.MethodType(unbound, processor)
+
+            if method is None:
+                logger.warning(
+                    "Could not resolve _get_num_multimodal_tokens for %s; "
+                    "falling back to conservative default of 256 image tokens",
+                    type(processor).__name__,
+                )
+                return 256
+
+            mm_tokens = method(
+                image_sizes=([height, width],), **mm_processor_kwargs
+            )
+            return mm_tokens["num_image_tokens"][0]
+
+        _mm.MultiModalProcessingInfo.get_max_image_tokens = _patched_get_max_image_tokens
+        logger.debug(
+            "Patched MultiModalProcessingInfo.get_max_image_tokens "
+            "for Gemma4Processor proxy compat"
+        )
     except (ImportError, AttributeError):
         pass
