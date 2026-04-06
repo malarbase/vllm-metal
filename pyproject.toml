@@ -29,7 +29,7 @@ classifiers = [
 dependencies = [
     # MLX - Required for Apple Silicon GPU acceleration
     "mlx>=0.31.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
-    "mlx-lm>=0.31.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.2; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "mlx-vlm>=0.4.0; platform_system == 'Darwin' and platform_machine == 'arm64'",  # Vision-language model support
     # Model loading and weights
     "transformers>=5.0.0",
@@ -66,6 +66,14 @@ Issues = "https://github.com/vllm-project/vllm-metal/issues"
 # vLLM Plugin Entry Points
 [project.entry-points."vllm.platform_plugins"]
 metal = "vllm_metal:register"
+
+# General plugin: applies compat patches in EVERY vLLM process (API server,
+# EngineCore subprocess, workers).  vllm.general_plugins fires via
+# load_general_plugins() early in EngineCore.__init__, before the Scheduler
+# is constructed — ensuring the Gemma 4 multimodal token-budget patch is in
+# place before MultiModalBudget is initialised.
+[project.entry-points."vllm.general_plugins"]
+metal-compat = "vllm_metal:register_compat"
 
 # Maturin configuration for mixed Rust/Python project
 [tool.maturin]

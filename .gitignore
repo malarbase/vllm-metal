@@ -136,6 +136,10 @@ cython_debug/
 *.swo
 *~
 
+# Local AI agent context (not for version control)
+.github/prompts/
+.github/skills/
+
 # OS
 .DS_Store
 Thumbs.db

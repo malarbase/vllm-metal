@@ -63,6 +63,8 @@ def __getattr__(name):
         return MetalPlatform
     elif name == "register":
         return _register
+    elif name == "register_compat":
+        return _register_compat
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -72,7 +74,28 @@ __all__ = [
     "get_config",
     "reset_config",
     "register",
+    "register_compat",
 ]
+
+
+def _register_compat() -> None:
+    """General plugin entry point — applies compat patches in every vLLM process.
+
+    vLLM loads ``vllm.general_plugins`` in *all* processes (API server,
+    EngineCore subprocess, worker processes) via ``load_general_plugins()``,
+    which is called early in ``EngineCore.__init__`` *before* the Scheduler is
+    constructed.  This is the correct place to apply monkey-patches that must
+    be in effect before MultiModalBudget is initialised.
+
+    The platform plugin (``_register`` below) also calls
+    ``apply_compat_patches()``, but that fires lazily when
+    ``current_platform`` is first resolved — which in the EngineCore subprocess
+    happens *after* the Scheduler is created, making it too late for the Gemma 4
+    multimodal token-budget fix.
+    """
+    from vllm_metal.compat import apply_compat_patches
+
+    apply_compat_patches()
 
 
 def _register() -> str | None:
