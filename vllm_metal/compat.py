@@ -12,16 +12,30 @@ import logging
 logger = logging.getLogger(__name__)
 
 _APPLIED = False
+_MM_BUDGET_PATCHED = False
 
 
 def apply_compat_patches() -> None:
-    """Apply all known compatibility patches (idempotent)."""
+    """Apply all known compatibility patches (idempotent).
+
+    This may be called from two entry points:
+    - ``_register_compat`` (vllm.general_plugins) — fired early in every
+      process via ``load_general_plugins()`` before the Scheduler is created.
+    - ``_register`` (vllm.platform_plugins) — fired lazily when
+      ``current_platform`` is first resolved.
+
+    The outer ``_APPLIED`` guard deduplicates the cheap patches, but the
+    multimodal patch has its own ``_MM_BUDGET_PATCHED`` sentinel because it
+    may fail silently on the first call (e.g. the platform plugin fires
+    before ``vllm.model_executor`` is fully initialised) while still
+    marking ``_APPLIED=True``.  The general plugin always retries it.
+    """
     global _APPLIED  # noqa: PLW0603
-    if _APPLIED:
-        return
-    _APPLIED = True
-    _patch_qwen35_rope_validation()
-    _patch_gemma4_rope_scaling()
+    if not _APPLIED:
+        _APPLIED = True
+        _patch_qwen35_rope_validation()
+        _patch_gemma4_rope_scaling()
+    # Always attempt the multimodal patch — it has its own idempotency guard.
     _patch_gemma4_multimodal_token_budget()
 
 
@@ -139,7 +153,7 @@ def _patch_gemma4_rope_scaling() -> None:
         pass
 
 
-def _patch_gemma4_multimodal_token_budget() -> None:
+def _patch_gemma4_multimodal_token_budget() -> None:  # noqa: PLR0912
     """Fix vLLM 0.17.1 EngineCore subprocess failing to call
     ``Gemma4Processor._get_num_multimodal_tokens`` during MultiModalBudget init.
 
@@ -155,9 +169,19 @@ def _patch_gemma4_multimodal_token_budget() -> None:
     the attribute is unreachable on the instance we resolve it directly from
     the concrete class in the transformers module, bypassing the proxy layer.
 
+    Has its own ``_MM_BUDGET_PATCHED`` sentinel (separate from the outer
+    ``_APPLIED`` guard) because ``apply_compat_patches`` may be called early
+    via the platform plugin before ``vllm.model_executor`` is importable; the
+    import would return early but ``_APPLIED`` would already be True, blocking
+    a later retry.  This patch is always retried until it succeeds.
+
     Remove this patch when vllm-metal upgrades to a vLLM version that has
     been tested against transformers 5.5.0 with Gemma 4.
     """
+    global _MM_BUDGET_PATCHED  # noqa: PLW0603
+    if _MM_BUDGET_PATCHED:
+        return
+
     try:
         from vllm.model_executor.models.transformers import multimodal as _mm
     except ImportError:
@@ -200,6 +224,7 @@ def _patch_gemma4_multimodal_token_budget() -> None:
             return mm_tokens["num_image_tokens"][0]
 
         _mm.MultiModalProcessingInfo.get_max_image_tokens = _patched_get_max_image_tokens
+        _MM_BUDGET_PATCHED = True
         logger.debug(
             "Patched MultiModalProcessingInfo.get_max_image_tokens "
             "for Gemma4Processor proxy compat"

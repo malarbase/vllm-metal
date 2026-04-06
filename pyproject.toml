@@ -67,6 +67,14 @@ Issues = "https://github.com/vllm-project/vllm-metal/issues"
 [project.entry-points."vllm.platform_plugins"]
 metal = "vllm_metal:register"
 
+# General plugin: applies compat patches in EVERY vLLM process (API server,
+# EngineCore subprocess, workers).  vllm.general_plugins fires via
+# load_general_plugins() early in EngineCore.__init__, before the Scheduler
+# is constructed — ensuring the Gemma 4 multimodal token-budget patch is in
+# place before MultiModalBudget is initialised.
+[project.entry-points."vllm.general_plugins"]
+metal-compat = "vllm_metal:register_compat"
+
 # Maturin configuration for mixed Rust/Python project
 [tool.maturin]
 # Build both the Rust extension and include Python source
