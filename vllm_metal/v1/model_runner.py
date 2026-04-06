@@ -658,6 +658,13 @@ class MetalModelRunner:
             vllm_config: vLLM configuration
             device: PyTorch device (CPU for Metal interop)
         """
+        # Apply compat patches early — this runs in both the APIServer process
+        # and the EngineCore subprocess.  The platform plugin's register() hook
+        # is only called in the main process, so patches that target EngineCore
+        # code paths must be applied here instead.
+        from vllm_metal.compat import apply_compat_patches
+        apply_compat_patches()
+
         self.vllm_config = vllm_config
         self.model_config = vllm_config.model_config
         self.cache_config = vllm_config.cache_config

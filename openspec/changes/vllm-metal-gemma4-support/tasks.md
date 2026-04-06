@@ -20,11 +20,13 @@
 
 ## 4. Integration Test
 
-- [x] 4.1 Start server: `vllm serve google/gemma-4-E4B-it --max-model-len 8192 --limit-mm-per-prompt '{"image": 0}' --host 127.0.0.1 --port 8000` (note: `--tool-call-parser functiongemma` requires a newer vLLM; `--limit-mm-per-prompt` works around a vLLM 0.17.1 `Gemma4Processor._get_num_multimodal_tokens` bug in scheduler init)
+- [x] 4.1 Start server without `--limit-mm-per-prompt` workaround — now works via compat patches in `vllm_metal/compat.py` and a direct fix to vLLM's `MultiModalProcessingInfo.get_max_image_tokens` that resolves the `Gemma4Processor._get_num_multimodal_tokens` proxy-object AttributeError in the EngineCore subprocess
 - [x] 4.2 Assert `GET /health` returns HTTP 200 within 5 minutes ✓ (server up in ~90s)
 - [x] 4.3 Assert `GET /v1/models` returns HTTP 200 with `id: "google/gemma-4-E4B-it"` in the response ✓
 - [x] 4.4 Assert `POST /v1/chat/completions` returns HTTP 200 with non-empty `choices[0].message.content` ✓ (`"Hello there!"`)
 - [x] 4.5 Routing regression confirmed via unit test: gemma4/llava/qwen2_vl → mlx-vlm; llama/qwen3 → mlx-lm (5/5 pass)
+- [x] 4.6 Vision (image+text) request returns HTTP 200 ✓ — vLLM multimodal.py patched to expose `_resolve_processor_method` helper and handle proxy-object attribute resolution; `librosa`/`soundfile`/`scipy` installed for audio deps
+- [ ] 4.7 Audio request returns HTTP 200 — **BLOCKED**: vLLM 0.17.1 `TransformersMultiModalForCausalLM` only supports images at the API processing layer; `get_mrope_input_positions` raises `NotImplementedError` for audio inputs. mlx-vlm's Gemma 4 audio tower works but vLLM can't route audio tokens to it. Resume when vLLM adds native Gemma 4 audio support.
 
 ## 5. Documentation & PR
 
