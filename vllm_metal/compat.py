@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _APPLIED = False
 _MM_BUDGET_PATCHED = False
+_GEMMA4_TOOL_PARSER_REGISTERED = False
 
 
 def apply_compat_patches() -> None:
@@ -37,6 +38,29 @@ def apply_compat_patches() -> None:
         _patch_gemma4_rope_scaling()
     # Always attempt the multimodal patch — it has its own idempotency guard.
     _patch_gemma4_multimodal_token_budget()
+    _register_gemma4_tool_parser()
+
+
+def _register_gemma4_tool_parser() -> None:
+    """Register ``gemma4`` tool-call-parser with vLLM (Gemma 4 chat template format).
+
+    vLLM 0.17 ships ``functiongemma`` for a different delimiter scheme; Gemma 4 IT
+    models use ``<|tool_call>`` / ``<tool_call|>`` per mlx-lm.  Pearlster uses
+    ``--tool-call-parser gemma4`` on Apple Silicon.
+    """
+    global _GEMMA4_TOOL_PARSER_REGISTERED  # noqa: PLW0603
+    if _GEMMA4_TOOL_PARSER_REGISTERED:
+        return
+    try:
+        from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
+
+        from vllm_metal.tool_parsers.gemma4_tool_parser import Gemma4ToolParser
+
+        ToolParserManager.register_module(module=Gemma4ToolParser, name="gemma4")
+        _GEMMA4_TOOL_PARSER_REGISTERED = True
+        logger.info("Registered vLLM tool-call-parser 'gemma4' for Gemma 4 models")
+    except Exception:
+        logger.debug("Gemma4 tool parser registration skipped", exc_info=True)
 
 
 def _patch_qwen35_rope_validation() -> None:
